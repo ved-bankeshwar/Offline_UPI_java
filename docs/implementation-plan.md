@@ -29,7 +29,7 @@ Conditional checks and loops drive gossip and ingestion. An examiner can also op
 
 | Class | Role |
 |---|---|
-| `Payer` | `DemoService.createPacket()` calls `Payer.ofVpa(sender).sign(...)`. The one-argument constructor calls `this(...)`. `getDeviceId()` is the phone inject uses when the caller does not name one. |
+| `Payer` | `DemoService.createPacket()` calls `Payer.ofVpa(sender).sign(...)`. The one-argument constructor calls `this(...)`. `getDeviceId()` maps each demo person to a phone. The demo always injects at `phone-alice`. |
 | `Vpa` | `Payer.sign()` parses the receiver with `new Vpa(...)`. |
 | `MeshDevice` | Abstract phone. `OfflineDevice` and `BridgeDevice` call `super(id)`. `@MeshNode` says which one has internet, and `hasInternet()` reads that annotation. |
 | `PacketCarrier` | The interface `MeshDevice` implements. |

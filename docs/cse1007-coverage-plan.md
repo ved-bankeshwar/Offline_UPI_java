@@ -1,6 +1,6 @@
 # CSE1007 coverage plan
 
-Source: `docs/CSE1007_JAVA-PROGRAMMING_ETH_1.0_52_CSE1007_64 ACP.pdf` (CSE1007 Java Programming, syllabus version 1.0, Academic Council No. 52).
+Source: CSE1007 Java Programming, syllabus version 1.0, Academic Council No. 52.
 
 The running code is the simpler design in `docs/implementation-plan.md`: one thread per phone, a single `wait`/`notify` inbox, plain loops. This file's heavier sketch (a queue on every phone) was not built.
 

@@ -1,43 +1,15 @@
-# UPI Offline Mesh — JavaFX Desktop Edition
+# UPI Offline Mesh
 
-This project now includes a **JavaFX desktop dashboard** instead of the original browser/Thymeleaf dashboard. The Spring Boot REST backend, encryption, mesh simulation, account ledger, and idempotency logic are retained.
+A laptop demo of an offline UPI payment. The sender's phone encrypts the payment, nearby phones carry the packet, and one phone with internet uploads it. The server decrypts it, settles it once, and shows the ledger.
 
-## Run the JavaFX application (macOS)
+Two screens share that server on port 8080. Run one at a time.
 
-Requirements: JDK 17 or newer and internet access the first time Maven downloads dependencies.
+- Browser: `mvnw.cmd spring-boot:run`, then http://localhost:8080/ledger
+- Desktop: `mvnw.cmd javafx:run`
 
-```bash
-cd upi
-chmod +x mvnw
-./mvnw clean javafx:run
-```
+On the ledger page, use the buttons in order: **Inject into mesh**, **Run gossip**, **Flush bridge**. Inject only places the packet on `phone-alice`. Gossip copies it to the other phones. Flush is what moves the money.
 
-The desktop app starts the Spring Boot API automatically on `http://localhost:8080` and opens the JavaFX dashboard. Do not start a second backend on port 8080 at the same time.
-
-The same server also serves a servlet/JSP ledger at **http://localhost:8080/ledger** (`mvnw spring-boot:run`, then open that URL). Accounts live in the H2 file `data/upimesh`, so balances survive a restart. Which module owns which class is written up in `docs/implementation-plan.md`.
-
-### What the JavaFX dashboard supports
-
-- Compose a demo payment and inject its encrypted packet into the mesh.
-- Run a gossip round to transfer packets between simulated phones.
-- Upload bridge-held packets to the backend and inspect duplicate/idempotency outcomes.
-- View live device status, packet counts, account balances, the transaction ledger, and activity log.
-- Reset mesh packets and the idempotency cache without deleting settled account/transaction data.
-
-The dashboard refreshes its state every three seconds. It talks to the existing REST API over localhost, so the core backend code is not duplicated in the UI.
-
-### Web ledger (servlets and JSP)
-
-`mvnw spring-boot:run` also serves a browser ledger at **http://localhost:8080/ledger**. That page is a servlet plus a JSP. The form settles a payment immediately and also drops the packet on `phone-alice`. Gossip, flush, and reset are separate buttons. Balances are stored in a file-backed H2 database under `data/`, so they survive a restart. Delete the `data` folder to reseed the four demo accounts.
-
-The module-by-module map is in [docs/implementation-plan.md](docs/implementation-plan.md).
-
----
-
-
-A Spring Boot backend that demonstrates **offline UPI payments routed through a Bluetooth-style mesh network**. You're in a basement with zero connectivity. You send your friend ₹500. Your phone encrypts the payment, broadcasts it to nearby phones, and the packet hops device-to-device until *some* phone walks outside, gets 4G, and silently uploads it to this backend. The backend decrypts, deduplicates, and settles.
-
-This repo is the **server side** of that system, plus a software simulator of the mesh so you can demo the whole flow on a single laptop without any real Bluetooth hardware.
+Accounts live in the H2 file `data/upimesh`. Delete `data/` to reseed the four demo accounts. Which class belongs to which course module is in [docs/implementation-plan.md](docs/implementation-plan.md).
 
 ---
 
@@ -64,7 +36,7 @@ The system shows three things working end to end:
 2. **Even if the same payment reaches the backend simultaneously through multiple bridge nodes, it settles exactly once.** (Idempotency via atomic compare-and-set on the ciphertext hash.)
 3. **A tampered or replayed packet is rejected** before it touches the ledger.
 
-You'll see all three in the dashboard.
+You'll see all three on the ledger page.
 
 ---
 
@@ -119,7 +91,7 @@ The dashboard has four buttons that walk through the full pipeline. The intended
 
 ### Step 1 — Compose a payment
 
-Choose sender, receiver, amount, PIN. Click **"📤 Inject into Mesh"**.
+Choose sender, receiver, amount, PIN. Click **"Inject into mesh"**.
 
 **What actually happens on the backend:**
 - The server pretends to be the sender's phone.
@@ -132,7 +104,7 @@ You'll see `phone-alice` now holds 1 packet.
 
 ### Step 2 — Run gossip rounds
 
-Click **"🔄 Run Gossip Round"**. Then click it again.
+Click **"Run gossip"**. Then click it again.
 
 Each round, every device that holds a packet broadcasts it to every other device within "Bluetooth range" (which, in our simulator, means everyone). TTL decrements per hop.
 
@@ -142,7 +114,7 @@ In the real system this would happen organically as people walk past each other 
 
 ### Step 3 — Bridge node walks outside
 
-Click **"📡 Bridges Upload to Backend"**.
+Click **"Flush bridge"**.
 
 `phone-bridge` is the only device with `hasInternet=true`. The dashboard simulates that phone walking outside and getting 4G. It POSTs every packet it holds to `/api/bridge/ingest`.
 
@@ -163,7 +135,7 @@ To really see idempotency in action, modify `MeshSimulatorService.java` to seed 
 
 1. Click "Inject" once.
 2. Click "Gossip" twice.
-3. Click "Flush Bridges" — only `phone-bridge` is a bridge in the default seed, so just one upload happens.
+3. Click "Flush bridge" — only `phone-bridge` has internet, so just one upload happens.
 
 To exercise the *concurrent duplicate* case properly, run the test:
 ```cmd
@@ -282,45 +254,22 @@ See `BridgeIngestionService.java` for the freshness check.
 
 ```
 upi-offline-mesh/
-├── pom.xml                                  Maven build, Spring Boot 3.3, Java 17
-├── mvnw, mvnw.cmd                           Maven wrapper (no install needed)
-├── README.md                                this file
+├── pom.xml
+├── mvnw, mvnw.cmd
+├── README.md
 └── src/main/
-    ├── resources/
-    │   ├── application.properties           H2 file DB, port 8080, TTLs
-    │   └── templates/dashboard.html         The interactive demo UI
+    ├── webapp/WEB-INF/jsp/ledger.jsp        Browser ledger
+    ├── resources/application.properties     H2 file DB, port 8080, key file
     └── java/com/demo/upimesh/
         ├── UpiMeshApplication.java          Spring Boot main class
-        │
-        ├── model/                           ── Domain layer
-        │   ├── Account.java                 JPA entity. @Version = optimistic lock
-        │   ├── AccountRepository.java       Spring Data JPA
-        │   ├── Transaction.java             Settled-tx ledger. unique idx on packetHash
-        │   ├── TransactionRepository.java   Spring Data JPA
-        │   ├── MeshPacket.java              Wire format. Outer fields readable, ciphertext opaque
-        │   └── PaymentInstruction.java      Decrypted payload (sender/receiver/amount/nonce/time)
-        │
-        ├── crypto/                          ── Cryptography layer
-        │   ├── ServerKeyHolder.java         Generates RSA-2048 keypair on startup
-        │   └── HybridCryptoService.java     RSA-OAEP + AES-256-GCM encrypt/decrypt + ciphertext hash
-        │
-        ├── service/                         ── Business logic
-        │   ├── DemoService.java             Seeds accounts, simulates a sender phone
-        │   ├── VirtualDevice.java           One simulated phone in the mesh
-        │   ├── MeshSimulatorService.java    Gossip protocol across virtual devices
-        │   ├── IdempotencyService.java      ConcurrentHashMap = JVM-local Redis SETNX
-        │   ├── SettlementService.java       @Transactional debit + credit + ledger insert
-        │   └── BridgeIngestionService.java  THE pipeline: hash → claim → decrypt → freshness → settle
-        │
-        ├── controller/                      ── HTTP layer
-        │   ├── ApiController.java           All REST endpoints
-        │   └── DashboardController.java     Serves the dashboard HTML at /
-        │
-        └── config/
-            └── AppConfig.java               @EnableScheduling for cache eviction
-
-src/test/java/com/demo/upimesh/
-└── IdempotencyConcurrencyTest.java          The 3-bridges-at-once test + tamper test
+        ├── model/                           Packets, payers, phones, accounts
+        ├── crypto/                          RSA key file + hybrid encrypt/decrypt
+        ├── service/                         Gossip, inbox, ingest, settlement
+        ├── jdbc/                            Ledger transfer and its exceptions
+        ├── io/                              Saved mesh packets
+        ├── web/                             Ledger servlet, JSP bean, rupee tag
+        ├── fx/                              Desktop window
+        └── controller/                      REST API; / redirects to /ledger
 ```
 
 ---
@@ -339,7 +288,7 @@ src/test/java/com/demo/upimesh/
 | GET | `/api/mesh/state` | Current state of every virtual device |
 | POST | `/api/demo/send` | Simulate sender phone — encrypt + inject packet |
 | POST | `/api/mesh/gossip` | Run one round of gossip across the mesh |
-| POST | `/api/mesh/flush` | Bridges with internet upload to backend (parallel) |
+| POST | `/api/mesh/flush` | The phone with internet uploads to the backend |
 | POST | `/api/mesh/reset` | Clear mesh + idempotency cache |
 | POST | `/api/bridge/ingest` | **The production endpoint.** Real bridges POST here |
 | GET | `/h2-console` | Browse the H2 file database |
@@ -397,7 +346,7 @@ This is a teaching demo. To make it production-grade you'd swap these things:
 |---|---|
 | H2 file database plus JDBC | PostgreSQL / MySQL with replicas |
 | `ConcurrentHashMap` for idempotency | Redis with `SET NX EX` |
-| RSA keypair regenerated on every startup | Private key in HSM (AWS KMS, HashiCorp Vault). Public key cached on devices. |
+| RSA private key stored in `data/keys/server.p8` | Private key in HSM (AWS KMS, HashiCorp Vault). Public key cached on devices. |
 | Server-side `DemoService.createPacket()` | Same code running on Android, in a Kotlin port |
 | Software-simulated mesh (`MeshSimulatorService`) | Real BLE GATT or Wi-Fi Direct between phones |
 | One settlement service that owns the ledger | Integration with NPCI / a real bank core |
