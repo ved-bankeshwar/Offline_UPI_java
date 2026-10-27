@@ -8,7 +8,19 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-/** Remembers packet ids already ingested so Flush twice does not debit twice. */
+/**
+ * In-memory idempotency cache. In production this would be Redis with SETNX +
+ * TTL — exactly the same semantics, just distributed across instances.
+ *
+ * The contract:
+ *   - claim(hash) returns true on first call, false on every call after that
+ *     (within the TTL window)
+ *   - the operation is atomic — even if 100 threads call claim(hash) at the
+ *     same instant, exactly one returns true
+ *
+ * This is what kills the "three bridges deliver simultaneously" problem.
+ * ConcurrentHashMap.putIfAbsent is the JVM-local equivalent of Redis SETNX.
+ */
 @Service
 public class IdempotencyService {
 
@@ -17,17 +29,36 @@ public class IdempotencyService {
     @Value("${upi.mesh.idempotency-ttl-seconds:86400}")
     private long ttlSeconds;
 
-    /** True if this is the first time we have seen this id. */
-    public boolean claim(String packetId) {
-        return seen.putIfAbsent(packetId, Instant.now()) == null;
+    /**
+     * Try to claim a hash. Returns true if this caller is the first; false if
+     * someone else already claimed it (i.e. the packet is a duplicate).
+     */
+    public boolean claim(String packetHash) {
+        Instant now = Instant.now();
+        Instant prev = seen.putIfAbsent(packetHash, now);
+        return prev == null;
     }
 
+    /**
+     * Drop a claim when no ledger row was committed, so the same packet can be
+     * delivered again. Do not call this after a SETTLED or REJECTED insert.
+     */
+    public void release(String packetHash) {
+        seen.remove(packetHash);
+    }
+
+    public int size() {
+        return seen.size();
+    }
+
+    /** Periodically evict entries past their TTL so the map doesn't grow forever. */
     @Scheduled(fixedDelay = 60_000)
     public void evictExpired() {
         Instant cutoff = Instant.now().minusSeconds(ttlSeconds);
         seen.entrySet().removeIf(e -> e.getValue().isBefore(cutoff));
     }
 
+    /** Test/demo helper. */
     public void clear() {
         seen.clear();
     }

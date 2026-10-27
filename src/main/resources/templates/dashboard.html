@@ -14,6 +14,7 @@
         .container { max-width: 1200px; margin: 0 auto; }
         .grid { display: grid; gap: 16px; }
         .grid-2 { grid-template-columns: 1fr 1fr; }
+        .grid-3 { grid-template-columns: repeat(3, 1fr); }
         .card {
             background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px;
         }
@@ -29,15 +30,11 @@
         }
         .badge-online { background: #2ea043; color: white; }
         .badge-offline { background: #6e7681; color: white; }
-        .packet-card {
-            font-size: 12px;
-            background: #21262d;
-            border: 1px solid #30363d;
-            border-radius: 4px;
-            padding: 8px;
-            margin-top: 8px;
+        .packet-id {
+            font-family: 'Consolas', 'Monaco', monospace; font-size: 11px;
+            background: #21262d; padding: 2px 6px; border-radius: 3px; margin: 2px;
+            display: inline-block;
         }
-        .packet-card .amt { color: #56d364; font-family: 'Consolas', monospace; font-weight: 600; }
         button {
             background: #238636; color: white; border: none; padding: 8px 16px;
             border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500;
@@ -78,10 +75,10 @@
 </head>
 <body>
 <div class="container">
-    <h1>UPI Offline Mesh</h1>
+    <h1>📡 UPI Offline Mesh — Live Demo</h1>
     <p class="small">
-        Payer has no Internet. The payment hops across nearby phones until a phone with 4G
-        reaches the bank. Settlement happens only after upload — until then it is an IOU.
+        Send money in a basement with zero internet. Encrypted packets gossip from phone to phone
+        until one with 4G reaches the backend.
     </p>
 
     <div class="controls">
@@ -103,22 +100,23 @@
                 <option>dave@demo</option>
             </select>
             ₹<input type="number" id="amount" value="500" style="width: 100px">
-            <button onclick="sendPacket()">Inject into Mesh</button>
+            PIN <input type="text" id="pin" value="1234" style="width: 80px" maxlength="4">
+            <button onclick="sendPacket()">📤 Inject into Mesh</button>
         </div>
 
         <div style="margin-top: 16px">
             <span class="step-num">2</span><strong>Gossip</strong> — packets hop device-to-device
-            <button class="secondary" onclick="gossip()">Run Gossip Round</button>
+            <button class="secondary" onclick="gossip()">🔄 Run Gossip Round</button>
         </div>
 
         <div style="margin-top: 16px">
             <span class="step-num">3</span><strong>Bridge node walks outside, hits 4G</strong>
-            <button class="secondary" onclick="flushBridges()">Bridges Upload to Backend</button>
-            <span class="small">(phone-bridge has Internet — this is the bank hop)</span>
+            <button class="secondary" onclick="flushBridges()">📡 Bridges Upload to Backend</button>
+            <span class="small">(parallel — exercises idempotency)</span>
         </div>
 
         <div style="margin-top: 16px">
-            <button class="danger" onclick="resetMesh()">Reset Mesh</button>
+            <button class="danger" onclick="resetMesh()">🗑 Reset Mesh + Cache</button>
         </div>
     </div>
 
@@ -134,7 +132,7 @@
                 <thead><tr><th>VPA</th><th>Holder</th><th>Balance</th></tr></thead>
                 <tbody></tbody>
             </table>
-            <p class="small">Simulated bank ledger. Money moves only after a bridge uploads.</p>
+            <p class="small" id="cacheInfo"></p>
         </div>
     </div>
 
@@ -169,20 +167,14 @@ async function refresh() {
         <div class="device ${d.hasInternet ? 'bridge' : 'offline'}">
             <strong>${d.deviceId}</strong>
             <span class="badge ${d.hasInternet ? 'badge-online' : 'badge-offline'}">
-                ${d.hasInternet ? '4G (bridge)' : 'OFFLINE'}
+                ${d.hasInternet ? '🌐 4G' : '🚫 OFFLINE'}
             </span>
             <span class="small">holding ${d.packetCount} packet(s)</span>
-            ${(d.packets || []).map(p => `
-                <div class="packet-card">
-                    <div><span class="small">${p.packetId}</span> · TTL ${p.ttl}</div>
-                    <div>${p.senderVpa} → ${p.receiverVpa}
-                        <span class="amt">₹${p.amount}</span>
-                        <span class="small">(plaintext)</span>
-                    </div>
-                </div>
-            `).join('')}
+            <div>${d.packetIds.map(id => `<span class="packet-id">${id}</span>`).join('')}</div>
         </div>
     `).join('');
+    document.getElementById('cacheInfo').textContent =
+        `Idempotency cache size: ${m.idempotencyCacheSize}`;
 
     // Accounts
     const accs = await fetch('/api/accounts').then(r => r.json());
@@ -209,6 +201,7 @@ async function sendPacket() {
         senderVpa: document.getElementById('senderVpa').value,
         receiverVpa: document.getElementById('receiverVpa').value,
         amount: parseFloat(document.getElementById('amount').value),
+        pin: document.getElementById('pin').value,
         ttl: 5,
         startDevice: 'phone-alice'
     };
@@ -216,20 +209,20 @@ async function sendPacket() {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(body)
     }).then(r => r.json());
-    log(`Packet ${r.packetId.substring(0,8)} injected at ${r.injectedAt} (TTL ${r.ttl})`);
-    log(`   ${r.senderVpa} → ${r.receiverVpa} ₹${r.amount} (readable on every hop)`);
+    log(`📤 Packet ${r.packetId.substring(0,8)} encrypted & injected at ${r.injectedAt} (TTL ${r.ttl})`);
+    log(`   ciphertext (truncated): ${r.ciphertextPreview}`);
     refresh();
 }
 
 async function gossip() {
     const r = await fetch('/api/mesh/gossip', {method: 'POST'}).then(r => r.json());
-    log(`Gossip: ${r.transfers} transfer(s) — ${JSON.stringify(r.deviceCounts)}`);
+    log(`🔄 Gossip: ${r.transfers} transfer(s) — ${JSON.stringify(r.deviceCounts)}`);
     refresh();
 }
 
 async function flushBridges() {
     const r = await fetch('/api/mesh/flush', {method: 'POST'}).then(r => r.json());
-    log(`${r.uploadsAttempted} bridge upload(s):`);
+    log(`📡 ${r.uploadsAttempted} bridge upload(s):`);
     r.results.forEach(res => {
         log(`   ${res.bridgeNode} packet ${res.packetId} → ${res.outcome}` +
             (res.reason ? ` (${res.reason})` : ''));
@@ -239,7 +232,7 @@ async function flushBridges() {
 
 async function resetMesh() {
     await fetch('/api/mesh/reset', {method: 'POST'});
-    log('Mesh cleared (ledger balances are kept)');
+    log('🗑 mesh + idempotency cache cleared');
     refresh();
 }
 

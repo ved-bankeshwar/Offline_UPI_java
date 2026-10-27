@@ -1,4 +1,39 @@
-# UPI Offline Mesh — Demo
+# UPI Offline Mesh — JavaFX Desktop Edition
+
+This project now includes a **JavaFX desktop dashboard** instead of the original browser/Thymeleaf dashboard. The Spring Boot REST backend, encryption, mesh simulation, account ledger, and idempotency logic are retained.
+
+## Run the JavaFX application (macOS)
+
+Requirements: JDK 17 or newer and internet access the first time Maven downloads dependencies.
+
+```bash
+cd upi
+chmod +x mvnw
+./mvnw clean javafx:run
+```
+
+The desktop app starts the Spring Boot API automatically on `http://localhost:8080` and opens the JavaFX dashboard. Do not start a second backend on port 8080 at the same time.
+
+The same server also serves a servlet/JSP ledger at **http://localhost:8080/ledger** (`mvnw spring-boot:run`, then open that URL). Accounts live in the H2 file `data/upimesh`, so balances survive a restart. Which module owns which class is written up in `docs/implementation-plan.md`.
+
+### What the JavaFX dashboard supports
+
+- Compose a demo payment and inject its encrypted packet into the mesh.
+- Run a gossip round to transfer packets between simulated phones.
+- Upload bridge-held packets to the backend and inspect duplicate/idempotency outcomes.
+- View live device status, packet counts, account balances, the transaction ledger, and activity log.
+- Reset mesh packets and the idempotency cache without deleting settled account/transaction data.
+
+The dashboard refreshes its state every three seconds. It talks to the existing REST API over localhost, so the core backend code is not duplicated in the UI.
+
+### Web ledger (servlets and JSP)
+
+`mvnw spring-boot:run` also serves a browser ledger at **http://localhost:8080/ledger**. That page is a servlet plus a JSP. The form settles a payment immediately and also drops the packet on `phone-alice`. Gossip, flush, and reset are separate buttons. Balances are stored in a file-backed H2 database under `data/`, so they survive a restart. Delete the `data` folder to reseed the four demo accounts.
+
+The module-by-module map is in [docs/implementation-plan.md](docs/implementation-plan.md).
+
+---
+
 
 A Spring Boot backend that demonstrates **offline UPI payments routed through a Bluetooth-style mesh network**. You're in a basement with zero connectivity. You send your friend ₹500. Your phone encrypts the payment, broadcasts it to nearby phones, and the packet hops device-to-device until *some* phone walks outside, gets 4G, and silently uploads it to this backend. The backend decrypts, deduplicates, and settles.
 
@@ -56,13 +91,13 @@ The first run downloads Maven (~10 MB) and all dependencies (~80 MB) — give it
 ./mvnw spring-boot:run
 ```
 
-### Open the dashboard
+### Open the ledger
 
 Once you see `Started UpiMeshApplication in X.XXX seconds`, open:
 
-**http://localhost:8080**
+**http://localhost:8080/ledger**
 
-You'll get a dark dashboard with everything you need to drive the demo.
+`/` redirects there. The page is the servlet/JSP UI. The JavaFX window is the desktop UI (`mvnw javafx:run`) and must not be started while this server is already on port 8080.
 
 ### Stop the server
 
@@ -252,7 +287,7 @@ upi-offline-mesh/
 ├── README.md                                this file
 └── src/main/
     ├── resources/
-    │   ├── application.properties           H2 in-memory DB, port 8080, TTLs
+    │   ├── application.properties           H2 file DB, port 8080, TTLs
     │   └── templates/dashboard.html         The interactive demo UI
     └── java/com/demo/upimesh/
         ├── UpiMeshApplication.java          Spring Boot main class
@@ -294,7 +329,10 @@ src/test/java/com/demo/upimesh/
 
 | Method | Path | What it does |
 |---|---|---|
-| GET | `/` | Dashboard HTML |
+| GET | `/` | Redirects to the JSP ledger |
+| GET | `/ledger` | Servlet + JSP ledger (accounts, transactions, mesh) |
+| POST | `/ledger` | Settle, gossip, flush, or reset from the JSP form |
+| GET/POST | `/servlet/ingest` | Servlet bridge upload (`doGet` help, `doPost` packet JSON) |
 | GET | `/api/server-key` | Server's RSA public key (base64) |
 | GET | `/api/accounts` | All accounts and balances |
 | GET | `/api/transactions` | Last 20 transactions |
@@ -304,9 +342,9 @@ src/test/java/com/demo/upimesh/
 | POST | `/api/mesh/flush` | Bridges with internet upload to backend (parallel) |
 | POST | `/api/mesh/reset` | Clear mesh + idempotency cache |
 | POST | `/api/bridge/ingest` | **The production endpoint.** Real bridges POST here |
-| GET | `/h2-console` | Browse the in-memory database |
+| GET | `/h2-console` | Browse the H2 file database |
 
-H2 console login: JDBC URL `jdbc:h2:mem:upimesh`, username `sa`, no password.
+H2 console login: JDBC URL `jdbc:h2:file:./data/upimesh`, username `sa`, no password.
 
 ### Request format for `/api/bridge/ingest`
 
@@ -357,7 +395,7 @@ This is a teaching demo. To make it production-grade you'd swap these things:
 
 | What's in the demo | What it would be in production |
 |---|---|
-| H2 in-memory DB | PostgreSQL / MySQL with replicas |
+| H2 file database plus JDBC | PostgreSQL / MySQL with replicas |
 | `ConcurrentHashMap` for idempotency | Redis with `SET NX EX` |
 | RSA keypair regenerated on every startup | Private key in HSM (AWS KMS, HashiCorp Vault). Public key cached on devices. |
 | Server-side `DemoService.createPacket()` | Same code running on Android, in a Kotlin port |

@@ -1,34 +1,29 @@
 package com.demo.upimesh.controller;
 
-import com.demo.upimesh.model.Account;
-import com.demo.upimesh.model.AccountRepository;
-import com.demo.upimesh.model.MeshPacket;
-import com.demo.upimesh.model.Transaction;
-import com.demo.upimesh.model.TransactionRepository;
-import com.demo.upimesh.service.BridgeIngestionService;
-import com.demo.upimesh.service.DemoService;
-import com.demo.upimesh.service.IdempotencyService;
-import com.demo.upimesh.service.MeshSimulatorService;
-import com.demo.upimesh.service.VirtualDevice;
+import com.demo.upimesh.crypto.ServerKeyHolder;
+import com.demo.upimesh.model.*;
+import com.demo.upimesh.service.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
+/**
+ * Public REST surface.
+ *
+ * The endpoints split into three groups:
+ *   /api/server-key      → so simulated senders can fetch the server's public key
+ *   /api/mesh/*          → simulator endpoints (inject, gossip, flush)
+ *   /api/bridge/ingest   → THE real production endpoint a real bridge node would hit
+ *   /api/accounts, /api/transactions → for the dashboard
+ */
 @RestController
 @RequestMapping("/api")
 public class ApiController {
 
+    @Autowired private ServerKeyHolder serverKey;
     @Autowired private DemoService demo;
     @Autowired private MeshSimulatorService mesh;
     @Autowired private BridgeIngestionService bridge;
@@ -36,97 +31,136 @@ public class ApiController {
     @Autowired private TransactionRepository txRepo;
     @Autowired private IdempotencyService idempotency;
 
-    @PostMapping("/demo/send")
-    public Map<String, Object> demoSend(@RequestBody DemoSendRequest req) {
-        int ttl = req.ttl == null ? 5 : req.ttl;
-        MeshPacket packet = demo.createPacket(req.senderVpa, req.receiverVpa, req.amount, ttl);
+    // ------------------------------------------------------------------ key
 
-        String startDevice = req.startDevice == null ? "phone-alice" : req.startDevice;
+    @GetMapping("/server-key")
+    public Map<String, String> getServerPublicKey() {
+        return Map.of(
+                "publicKey", serverKey.getPublicKeyBase64(),
+                "algorithm", "RSA-2048 / OAEP-SHA256",
+                "hybridScheme", "RSA-OAEP encrypts an AES-256-GCM session key"
+        );
+    }
+
+    // ---------------------------------------------------------------- demo
+
+    /**
+     * Demo helper: build a packet on the server (simulating a sender phone)
+     * and inject it into the mesh at the given device.
+     */
+    @PostMapping("/demo/send")
+    public ResponseEntity<?> demoSend(@RequestBody DemoSendRequest req) throws Exception {
+        MeshPacket packet = demo.createPacket(
+                req.senderVpa, req.receiverVpa, req.amount, req.pin,
+                req.ttl == null ? 5 : req.ttl);
+
+        String startDevice = req.startDevice == null || req.startDevice.isBlank()
+                ? "phone-alice"
+                : req.startDevice;
         mesh.inject(startDevice, packet);
 
-        var p = packet.getPayload();
-        return Map.of(
+        return ResponseEntity.ok(Map.of(
                 "packetId", packet.getPacketId(),
-                "senderVpa", p.getSenderVpa(),
-                "receiverVpa", p.getReceiverVpa(),
-                "amount", p.getAmount().toPlainString(),
+                "ciphertextPreview", packet.getCiphertext().substring(0, 64) + "...",
                 "ttl", packet.getTtl(),
                 "injectedAt", startDevice
-        );
+        ));
     }
 
     public static class DemoSendRequest {
         public String senderVpa;
         public String receiverVpa;
         public BigDecimal amount;
+        public String pin;
         public Integer ttl;
         public String startDevice;
     }
 
+    // -------------------------------------------------------------- mesh sim
+
     @GetMapping("/mesh/state")
     public Map<String, Object> meshState() {
         List<Map<String, Object>> deviceData = new ArrayList<>();
-        for (VirtualDevice d : mesh.getDevices()) {
-            List<Map<String, Object>> packets = new ArrayList<>();
-            for (MeshPacket p : d.getHeldPackets()) {
-                Map<String, Object> row = new LinkedHashMap<>();
-                row.put("packetId", p.getPacketId().substring(0, 8));
-                row.put("ttl", p.getTtl());
-                if (p.getPayload() != null) {
-                    row.put("senderVpa", p.getPayload().getSenderVpa());
-                    row.put("receiverVpa", p.getPayload().getReceiverVpa());
-                    row.put("amount", p.getPayload().getAmount().toPlainString());
-                }
-                packets.add(row);
+        for (MeshDevice d : mesh.getDevices()) {
+            List<String> packetIds = new ArrayList<>();
+            for (MeshPacket packet : d.getHeldPackets()) {
+                String id = packet.getPacketId();
+                packetIds.add(id.length() <= 8 ? id : id.substring(0, 8));
             }
-            Map<String, Object> device = new LinkedHashMap<>();
-            device.put("deviceId", d.getDeviceId());
-            device.put("hasInternet", d.hasInternet());
-            device.put("packetCount", d.packetCount());
-            device.put("packets", packets);
-            deviceData.add(device);
+            deviceData.add(Map.of(
+                    "deviceId", d.getDeviceId(),
+                    "hasInternet", d.hasInternet(),
+                    "packetCount", d.packetCount(),
+                    "packetIds", packetIds
+            ));
         }
-        return Map.of("devices", deviceData);
+        return Map.of(
+                "devices", deviceData,
+                "idempotencyCacheSize", idempotency.size()
+        );
     }
 
     @PostMapping("/mesh/gossip")
     public Map<String, Object> meshGossip() {
         MeshSimulatorService.GossipResult r = mesh.gossipOnce();
-        return Map.of("transfers", r.transfers(), "deviceCounts", r.deviceCounts());
+        return Map.of(
+                "transfers", r.transfers(),
+                "deviceCounts", r.deviceCounts()
+        );
     }
 
+    /**
+     * Phones with internet upload every packet they hold, one after another.
+     */
     @PostMapping("/mesh/flush")
     public Map<String, Object> meshFlush() {
         List<MeshSimulatorService.BridgeUpload> uploads = mesh.collectBridgeUploads();
+
         List<Map<String, Object>> results = new ArrayList<>();
         for (MeshSimulatorService.BridgeUpload up : uploads) {
-            BridgeIngestionService.IngestResult r =
-                    bridge.ingest(up.packet(), up.bridgeNodeId(), up.packet().getHopCount());
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("bridgeNode", up.bridgeNodeId());
-            row.put("packetId", up.packet().getPacketId().substring(0, 8));
-            row.put("outcome", r.outcome());
-            row.put("reason", r.reason() == null ? "" : r.reason());
-            row.put("transactionId", r.transactionId() == null ? -1 : r.transactionId());
-            results.add(row);
+            int hops = Math.max(0, 5 - up.packet().getTtl());
+            BridgeIngestionService.IngestResult r = bridge.ingest(up.packet(), up.bridgeNodeId(), hops);
+            String packetId = up.packet().getPacketId();
+            results.add(Map.of(
+                    "bridgeNode", up.bridgeNodeId(),
+                    "packetId", packetId.length() <= 8 ? packetId : packetId.substring(0, 8),
+                    "outcome", r.outcome(),
+                    "reason", r.reason() == null ? "" : r.reason(),
+                    "transactionId", r.transactionId() == null ? -1 : r.transactionId()
+            ));
         }
-        return Map.of("uploadsAttempted", uploads.size(), "results", results);
+
+        return Map.of(
+                "uploadsAttempted", uploads.size(),
+                "results", results
+        );
     }
 
     @PostMapping("/mesh/reset")
-    public Map<String, String> meshReset() {
+    public Map<String, Object> meshReset() {
         mesh.resetMesh();
         idempotency.clear();
-        return Map.of("status", "mesh cleared");
+        return Map.of("status", "mesh and idempotency cache cleared");
     }
 
+    // -------------------------------------------------------------- bridge
+
+    /**
+     * THE PRODUCTION ENDPOINT.
+     * In a real deployment, the Android app's bridge logic POSTs here whenever
+     * the device has internet and is holding mesh packets.
+     */
     @PostMapping("/bridge/ingest")
-    public ResponseEntity<BridgeIngestionService.IngestResult> ingest(
+    public ResponseEntity<?> ingest(
             @RequestBody MeshPacket packet,
             @RequestHeader(value = "X-Bridge-Node-Id", defaultValue = "unknown") String bridgeNodeId,
             @RequestHeader(value = "X-Hop-Count", defaultValue = "0") int hopCount) {
-        return ResponseEntity.ok(bridge.ingest(packet, bridgeNodeId, hopCount));
+
+        BridgeIngestionService.IngestResult r = bridge.ingest(packet, bridgeNodeId, hopCount);
+        return ResponseEntity.ok(r);
     }
+
+    // ------------------------------------------------------------- accounts
 
     @GetMapping("/accounts")
     public List<Account> listAccounts() {

@@ -1,21 +1,18 @@
 package com.demo.upimesh.model;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
-import jakarta.persistence.Index;
-import jakarta.persistence.Table;
+import jakarta.persistence.*;
 
 import java.math.BigDecimal;
 import java.time.Instant;
 
+/**
+ * Permanent record of every settled transaction. Once written, never modified.
+ * The packetHash is the idempotency key — uniqueness is enforced at the DB level
+ * as a defense-in-depth fallback if the Redis-style cache layer ever fails.
+ */
 @Entity
 @Table(name = "transactions",
-        indexes = { @Index(name = "idx_packet_id", columnList = "packetId", unique = true) })
+        indexes = { @Index(name = "idx_packet_hash", columnList = "packetHash", unique = true) })
 public class Transaction {
 
     @Id
@@ -23,7 +20,7 @@ public class Transaction {
     private Long id;
 
     @Column(nullable = false, unique = true, length = 64)
-    private String packetId;
+    private String packetHash; // SHA-256 hex of the encrypted packet
 
     @Column(nullable = false)
     private String senderVpa;
@@ -35,16 +32,16 @@ public class Transaction {
     private BigDecimal amount;
 
     @Column(nullable = false)
-    private Instant signedAt;
+    private Instant signedAt; // When the sender originally signed it (offline)
 
     @Column(nullable = false)
-    private Instant settledAt;
+    private Instant settledAt; // When the backend actually processed it
 
     @Column(nullable = false)
-    private String bridgeNodeId;
+    private String bridgeNodeId; // Which mesh node finally delivered it
 
     @Column(nullable = false)
-    private int hopCount;
+    private int hopCount; // How many devices it passed through
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
@@ -52,11 +49,13 @@ public class Transaction {
 
     public enum Status { SETTLED, REJECTED }
 
+    public Transaction() {}
+
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
 
-    public String getPacketId() { return packetId; }
-    public void setPacketId(String packetId) { this.packetId = packetId; }
+    public String getPacketHash() { return packetHash; }
+    public void setPacketHash(String packetHash) { this.packetHash = packetHash; }
 
     public String getSenderVpa() { return senderVpa; }
     public void setSenderVpa(String senderVpa) { this.senderVpa = senderVpa; }
